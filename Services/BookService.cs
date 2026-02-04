@@ -1,13 +1,21 @@
 ﻿using BookTrackerAPI.Models;
 using BookTrackerAPI.DTOs;
+using BookTrackerAPI.Data; 
+using Microsoft.EntityFrameworkCore;
 
 namespace BookTrackerAPI.Services
 {
     public class BookService : IBookService
     {
-        private readonly List<Book> _books = new();
+        private readonly ApplicationDbContext _context;
         private int _nextId = 1;
 
+        public BookService(ApplicationDbContext context)
+        {
+            _context = context;
+        }
+
+        /*
         //Sample Books
         public BookService()
         {
@@ -47,11 +55,12 @@ namespace BookTrackerAPI.Services
                 UpdatedAt = DateTime.Now.AddDays(-5)
             });
         }
+        */
 
         //retrieves all books in List<Book>
-        public Task<List<Book>> GetAllBooksAsync(ReadingStatus? status = null, int? minRating = null)
+        public async Task<List<Book>> GetAllBooksAsync(ReadingStatus? status = null, int? minRating = null)
         {
-            var query = _books.AsQueryable();
+            var query = _context.Books.AsQueryable();
 
             if (status.HasValue)
             {
@@ -63,22 +72,22 @@ namespace BookTrackerAPI.Services
                 query = query.Where(b => b.Rating >= minRating.Value);
             }
 
-            return Task.FromResult(query.OrderByDescending(b => b.UpdatedAt).ToList());
+            return await query.OrderByDescending(b => b.UpdatedAt).ToListAsync();
         }
 
         //retrieves all books in List<Book> by Id
-        public Task<Book?> GetBookByIdAsync(int id)
+        public async Task<Book?> GetBookByIdAsync(int id)
         {
-            return Task.FromResult(_books.FirstOrDefault(b => b.Id == id));
+            return await _context.Books.FindAsync(id);
         }
 
         //creates books for List<Book>
-        public Task<Book> CreateBookAsync(CreateBookDto bookDto)
+        public async Task<Book> CreateBookAsync(CreateBookDto bookDto)
         {
             //new variable for each book
             var book = new Book
             {
-                Id = _nextId++,
+                //Id = _nextId++,
                 GoogleBooksId = bookDto.GoogleBooksId,
                 Title = bookDto.Title,
                 Author = bookDto.Author,
@@ -103,15 +112,17 @@ namespace BookTrackerAPI.Services
             }
 
             //adds new book to List<Book>
-            _books.Add(book);
-            return Task.FromResult(book);
+            _context.Books.Add(book);
+            await _context.SaveChangesAsync();
+
+            return book;
         }
 
         //updates book Dto
-        public Task<Book?> UpdateBookAsync(int id, UpdateBookDto updateDto)
+        public async Task<Book?> UpdateBookAsync(int id, UpdateBookDto updateDto)
         {
-            var book = _books.FirstOrDefault(b => b.Id == id);
-            if (book == null) return Task.FromResult<Book?>(null);
+            var book = _context.Books.FirstOrDefault(b => b.Id == id);
+            if (book == null) return null;
 
             //update book reading status
             if (updateDto.Status.HasValue)
@@ -160,40 +171,45 @@ namespace BookTrackerAPI.Services
             }
 
             book.UpdatedAt = DateTime.Now;
-            return Task.FromResult<Book?>(book);
+            await _context.SaveChangesAsync();
+
+            return book;
         }
 
         //removes book from list if it exists
-        public Task<bool> DeleteBookAsync(int id)
+        public async Task<bool> DeleteBookAsync(int id)
         {
-            var book = _books.FirstOrDefault(b => b.Id == id);
-            if (book == null) return Task.FromResult(false);
+            var book = _context.Books.FirstOrDefault(b => b.Id == id);
+            if (book == null) return false;
 
-            _books.Remove(book);
-            return Task.FromResult(true);
+            _context.Books.Remove(book);
+            await _context.SaveChangesAsync();
+
+            return true;
         }
 
         //searches for books with these properties filed out
-        public Task<List<Book>> SearchBooksAsync(string query)
+        public async Task<List<Book>> SearchBooksAsync(string query)
         {
             var lowerQuery = query.ToLower();
-            var results = _books.Where(b =>
-                b.Title.ToLower().Contains(lowerQuery) ||
-                b.Author.ToLower().Contains(lowerQuery) ||
-                b.Genres.Any(g => g.ToLower().Contains(lowerQuery))
-            ).ToList();
 
-            return Task.FromResult(results);
+            return await _context.Books
+                .Where(b =>
+                     b.Title.ToLower().Contains(lowerQuery) ||
+                     b.Author.ToLower().Contains(lowerQuery))
+                .ToListAsync();
         }
 
         //counts how many books are in each genre and sorts them by popularity // useful to see what genres you are reading the most of
-        public Task<Dictionary<string, int>> GetGenreStatisticsAsync()
+        public async Task<Dictionary<string, int>> GetGenreStatisticsAsync()
         {
+            var books = await _context.Books.ToListAsync();
+
             //empty dictionary to store counts
             var genreCounts = new Dictionary<string, int>();
 
             //loops through books in library
-            foreach (var book in _books)
+            foreach (var book in books)
             {
                 //loops through each genre in each book
                 foreach (var genre in book.Genres)
@@ -211,30 +227,32 @@ namespace BookTrackerAPI.Services
                 }
             }
 
-            return Task.FromResult(genreCounts.OrderByDescending(x => x.Value)
-                .ToDictionary(x => x.Key, x => x.Value));
+            return genreCounts.OrderByDescending(x => x.Value)
+                .ToDictionary(x => x.Key, x => x.Value);
         }
 
         //calculates reading statistics
-        public Task<ReadingStatistics> GetReadingStatisticsAsync()
+        public async Task<ReadingStatistics> GetReadingStatisticsAsync()
         {
+            var books = await _context.Books.ToListAsync();
+
             //creates new object 
             var stats = new ReadingStatistics
             {
-                TotalBooks = _books.Count, //counts all books in library
-                BooksRead = _books.Count(b => b.Status == ReadingStatus.Finished), //counts only books that have been finished
-                CurrentlyReading = _books.Count(b => b.Status == ReadingStatus.CurrentlyReading), //counts only books in progress, started but not finished
-                WantToRead = _books.Count(b => b.Status == ReadingStatus.WantToRead), //counts books want to read later
-                AverageRating = _books.Where(b => b.Rating.HasValue).Any()
-                    ? _books.Where(b => b.Rating.HasValue).Average(b => b.Rating ?? 0) : 0, //.Any() returns true if at least one exist //Ternary Operator ? valueIfTrue : valueIfFalse 
-                TotalPagesRead = _books.Where(b => b.Status == ReadingStatus.Finished && b.PageCount.HasValue)
+                TotalBooks = books.Count, //counts all books in library
+                BooksRead = books.Count(b => b.Status == ReadingStatus.Finished), //counts only books that have been finished
+                CurrentlyReading = books.Count(b => b.Status == ReadingStatus.CurrentlyReading), //counts only books in progress, started but not finished
+                WantToRead = books.Count(b => b.Status == ReadingStatus.WantToRead), //counts books want to read later
+                AverageRating = books.Where(b => b.Rating.HasValue).Any()
+                    ? books.Where(b => b.Rating.HasValue).Average(b => b.Rating ?? 0) : 0, //.Any() returns true if at least one exist //Ternary Operator ? valueIfTrue : valueIfFalse 
+                TotalPagesRead = books.Where(b => b.Status == ReadingStatus.Finished && b.PageCount.HasValue)
                     .Sum(b => b.PageCount ?? 0) //shows total number of pages read from all books
             };
 
             var genreStats = GetGenreStatisticsAsync().Result;
             stats.FavoriteGenre = genreStats.FirstOrDefault().Key;
 
-            return Task.FromResult(stats);
+            return stats;
         }
     }
 }
